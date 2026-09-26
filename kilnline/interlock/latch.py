@@ -26,6 +26,7 @@ class LatchState:
     reset_requested_at: float | None
     released_at: float | None
     trips: int
+    hold_s: float
 
     def held_for(self, now: float) -> float:
         if self.reset_requested_at is None:
@@ -33,7 +34,7 @@ class LatchState:
         return max(0.0, float(now) - self.reset_requested_at)
 
     def hold_remaining(self, now: float) -> float:
-        return 0.0
+        return max(0.0, self.hold_s - self.held_for(now))
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +46,7 @@ class LatchState:
             "reset_requested_at": self.reset_requested_at,
             "released_at": self.released_at,
             "trips": self.trips,
+            "hold_s": self.hold_s,
         }
 
 
@@ -52,14 +54,18 @@ class LatchRegistry:
     """Owns every latch in the line and the rules that release them."""
 
     def __init__(self, *, default_hold_s: float = 0.0) -> None:
-        # Kept for callers that used to configure a release hold.
-        self._default_hold_s = 0.0
+        if float(default_hold_s) < 0.0:
+            raise ValidationError("default latch hold must not be negative")
+        self._default_hold_s = float(default_hold_s)
         self._states: dict[str, LatchState] = {}
 
     def declare(self, name: str, *, description: str = "", hold_s: float | None = None) -> LatchState:
         label = self._label(name)
         if label in self._states:
             raise StateConflict("latch is already declared", name=label)
+        hold = self._default_hold_s if hold_s is None else float(hold_s)
+        if hold < 0.0:
+            raise ValidationError("latch hold must not be negative", name=label)
         state = LatchState(
             name=label,
             description=str(description),
@@ -69,6 +75,7 @@ class LatchRegistry:
             reset_requested_at=None,
             released_at=None,
             trips=0,
+            hold_s=hold,
         )
         self._states[label] = state
         return state
@@ -81,9 +88,12 @@ class LatchRegistry:
             tripped=True,
             reason=str(reason),
             tripped_at=current.tripped_at if current.tripped else float(at),
-            reset_requested_at=None,
+            # A re-asserted trip is the same fault continuing, so the operator's
+            # reset request -- and the hold already running -- must survive it.
+            reset_requested_at=current.reset_requested_at if current.tripped else None,
             released_at=current.released_at,
             trips=current.trips + (0 if current.tripped else 1),
+            hold_s=current.hold_s,
         )
         self._states[current.name] = state
         return state
@@ -103,17 +113,22 @@ class LatchRegistry:
             reset_requested_at=float(at),
             released_at=current.released_at,
             trips=current.trips,
+            hold_s=current.hold_s,
         )
         self._states[current.name] = state
         return state
 
     def evaluate(self, name: str, *, now: float, conditions_ok: bool) -> LatchState:
-        """Release the latch as soon as the operator has asked for a reset."""
+        """Release only once the reset request, the cleared cause and the hold align."""
 
         current = self._require(name)
         if not current.tripped:
             return current
         if current.reset_requested_at is None:
+            return current
+        if not conditions_ok:
+            return current
+        if current.hold_remaining(now) > 0.0:
             return current
         state = LatchState(
             name=current.name,
@@ -124,6 +139,7 @@ class LatchRegistry:
             reset_requested_at=None,
             released_at=float(now),
             trips=current.trips,
+            hold_s=current.hold_s,
         )
         self._states[current.name] = state
         return state
@@ -141,6 +157,7 @@ class LatchRegistry:
             reset_requested_at=None,
             released_at=float(at),
             trips=current.trips,
+            hold_s=current.hold_s,
         )
         self._states[current.name] = state
         return state
