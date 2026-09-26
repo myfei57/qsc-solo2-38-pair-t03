@@ -728,6 +728,7 @@ class ControlService:
         """Alarm reset, then latch release, then the burner train is ready again."""
 
         now = self._now()
+        mono = self._mono()
         if self.recovery.is_complete("alarm_reset"):
             self.recovery.reset(at=now, reason="recovery_restarted")
         if alarm_reset:
@@ -735,7 +736,9 @@ class ControlService:
         if clear_alarms:
             for code in self.alarms.active_codes():
                 self.alarms.clear(code, at=now)
-        result = self.ignition.recover(at=now, now=self._mono(), alarm_reset=alarm_reset)
+        # Latch timestamps are monotonic seconds; the wall clock would break
+        # the release hold arithmetic.
+        result = self.ignition.recover(at=mono, now=mono, alarm_reset=alarm_reset)
         if result["released"]:
             self.recovery.complete("latch_release", at=now)
             self.recovery.complete("burner_recovery", at=now)

@@ -41,13 +41,22 @@ class TemperatureGuard:
             raise ValidationError("latch hold must not be negative")
         self._margin_c = float(over_temp_margin_c)
         self._band_c = float(band_c)
+        self._hold_s = float(hold_s)
         self._latches = latches
         self._over_temp_latch = str(latch_over_temp)
         self._stale_latch = str(latch_baseline_stale)
         if self._over_temp_latch not in latches.snapshot():
-            latches.declare(self._over_temp_latch, description="zone left its over-temperature margin")
+            latches.declare(
+                self._over_temp_latch,
+                description="zone left its over-temperature margin",
+                hold_s=self._hold_s,
+            )
         if self._stale_latch not in latches.snapshot():
-            latches.declare(self._stale_latch, description="baseline or probe calibration expired")
+            latches.declare(
+                self._stale_latch,
+                description="baseline or probe calibration expired",
+                hold_s=self._hold_s,
+            )
 
     @property
     def over_temp_latch(self) -> str:
@@ -98,6 +107,9 @@ class TemperatureGuard:
                 REASON_OVER_TEMP,
                 at=now,
             )
+            result["tripped"].append(state.name)
+        if not baseline_fresh:
+            state = self._latches.trip(self._stale_latch, REASON_BASELINE_STALE, at=now)
             result["tripped"].append(state.name)
         if not probe_fresh:
             state = self._latches.trip(self._stale_latch, REASON_PROBE_STALE, at=now)
